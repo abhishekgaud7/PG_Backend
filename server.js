@@ -15,9 +15,9 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // Routes
-app.use('/api/auth', require('./routes/auth'));
-app.use('/api/properties', require('./routes/properties'));
-app.use('/api/bookings', require('./routes/bookings'));
+app.use('/auth', require('./routes/auth'));
+app.use('/properties', require('./routes/properties'));
+app.use('/bookings', require('./routes/bookings'));
 
 // Health check route
 app.get('/', (req, res) => {
