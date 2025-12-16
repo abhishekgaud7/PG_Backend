@@ -5,7 +5,7 @@ const supabase = require('../config/supabase');
 // @access  Private
 exports.createBooking = async (req, res, next) => {
     try {
-        const { property, checkInDate, checkOutDate } = req.body;
+        const { property, checkInDate, checkOutDate, paymentInfo } = req.body;
 
         // Validate required fields
         if (!property || !checkInDate || !checkOutDate) {
@@ -15,10 +15,41 @@ exports.createBooking = async (req, res, next) => {
             });
         }
 
+        // Validate payment information
+        if (!paymentInfo || !paymentInfo.type || !paymentInfo.status || !paymentInfo.id) {
+            return res.status(400).json({
+                success: false,
+                message: 'Please provide complete payment information (type, status, id)',
+            });
+        }
+
+        // Validate payment type
+        if (!['Mock', 'Cash'].includes(paymentInfo.type)) {
+            return res.status(400).json({
+                success: false,
+                message: 'Payment type must be either "Mock" or "Cash"',
+            });
+        }
+
+        // Validate payment status based on type
+        if (paymentInfo.type === 'Cash' && paymentInfo.status !== 'pending') {
+            return res.status(400).json({
+                success: false,
+                message: 'Cash payment status must be "pending"',
+            });
+        }
+
+        if (paymentInfo.type === 'Mock' && paymentInfo.status !== 'success') {
+            return res.status(400).json({
+                success: false,
+                message: 'Mock payment status must be "success"',
+            });
+        }
+
         // Check if property exists
         const { data: propertyExists, error: propertyError } = await supabase
             .from('properties')
-            .select('id, available_beds')
+            .select('id, available_beds, price_per_month')
             .eq('id', property)
             .single();
 
@@ -37,7 +68,18 @@ exports.createBooking = async (req, res, next) => {
             });
         }
 
-        // Create booking
+        // Calculate total amount based on dates and property price
+        const checkIn = new Date(checkInDate);
+        const checkOut = new Date(checkOutDate);
+        const days = Math.ceil((checkOut - checkIn) / (1000 * 60 * 60 * 24));
+        const totalAmount = paymentInfo.amount || Math.ceil((days / 30) * propertyExists.price_per_month);
+
+        // Determine booking status based on payment type
+        const bookingStatus = paymentInfo.type === 'Mock' && paymentInfo.status === 'success'
+            ? 'confirmed'
+            : 'pending';
+
+        // Create booking with payment information
         const { data: booking, error } = await supabase
             .from('bookings')
             .insert([
@@ -46,6 +88,11 @@ exports.createBooking = async (req, res, next) => {
                     property_id: property,
                     check_in_date: checkInDate,
                     check_out_date: checkOutDate,
+                    payment_type: paymentInfo.type,
+                    payment_status: paymentInfo.status,
+                    payment_id: paymentInfo.id,
+                    total_amount: totalAmount,
+                    status: bookingStatus,
                 },
             ])
             .select(`
@@ -61,7 +108,9 @@ exports.createBooking = async (req, res, next) => {
 
         res.status(201).json({
             success: true,
-            message: 'Booking created successfully',
+            message: paymentInfo.type === 'Cash'
+                ? 'Booking created successfully. Payment due on check-in.'
+                : 'Booking confirmed! Payment successful.',
             data: booking,
         });
     } catch (error) {
