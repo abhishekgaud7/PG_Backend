@@ -5,13 +5,29 @@ const supabase = require('../config/supabase');
 // @access  Private
 exports.createBooking = async (req, res, next) => {
     try {
-        const { property, checkInDate, checkOutDate, paymentInfo } = req.body;
+        const {
+            property,
+            checkInDate,
+            checkOutDate,
+            paymentInfo,
+            govtId,
+            emergencyName,
+            emergencyPhone,
+        } = req.body;
 
         // Validate required fields
         if (!property || !checkInDate || !checkOutDate) {
             return res.status(400).json({
                 success: false,
                 message: 'Please provide property, check-in date, and check-out date',
+            });
+        }
+
+        // Validate emergency contact (optional but recommended)
+        if (emergencyName && !emergencyPhone) {
+            return res.status(400).json({
+                success: false,
+                message: 'Please provide emergency contact phone number',
             });
         }
 
@@ -46,10 +62,10 @@ exports.createBooking = async (req, res, next) => {
             });
         }
 
-        // Check if property exists
+        // Check if property exists and is not deleted
         const { data: propertyExists, error: propertyError } = await supabase
             .from('properties')
-            .select('id, available_beds, price_per_month')
+            .select('id, available_beds, price_per_month, is_deleted')
             .eq('id', property)
             .single();
 
@@ -57,6 +73,14 @@ exports.createBooking = async (req, res, next) => {
             return res.status(404).json({
                 success: false,
                 message: 'Property not found',
+            });
+        }
+
+        // Check if property is soft-deleted
+        if (propertyExists.is_deleted) {
+            return res.status(400).json({
+                success: false,
+                message: 'This property is no longer available',
             });
         }
 
@@ -88,11 +112,15 @@ exports.createBooking = async (req, res, next) => {
                     property_id: property,
                     check_in_date: checkInDate,
                     check_out_date: checkOutDate,
+                    govt_id: govtId || null,
+                    emergency_name: emergencyName || null,
+                    emergency_phone: emergencyPhone || null,
                     payment_type: paymentInfo.type,
                     payment_status: paymentInfo.status,
                     payment_id: paymentInfo.id,
                     total_amount: totalAmount,
                     status: bookingStatus,
+                    is_deleted: false,
                 },
             ])
             .select(`
@@ -127,10 +155,18 @@ exports.getUserBookings = async (req, res, next) => {
             .from('bookings')
             .select(`
         *,
-        property:properties!property_id(title, type, city, address, price_per_month, images, gender)
+        property:properties!property_id(title, type, city, address, price_per_month, images, gender, is_deleted)
       `)
             .eq('user_id', req.user.id)
+            .eq('is_deleted', false)
             .order('created_at', { ascending: false });
+
+        if (error) {
+            throw error;
+        }
+
+        // Filter out bookings for deleted properties
+        const activeBookings = bookings.filter(booking => !booking.property?.is_deleted);
 
         if (error) {
             throw error;
@@ -138,8 +174,8 @@ exports.getUserBookings = async (req, res, next) => {
 
         res.status(200).json({
             success: true,
-            count: bookings.length,
-            data: bookings,
+            count: activeBookings.length,
+            data: activeBookings,
         });
     } catch (error) {
         next(error);
@@ -182,6 +218,7 @@ exports.getPropertyBookings = async (req, res, next) => {
         user:users!user_id(name, email, phone)
       `)
             .eq('property_id', propertyId)
+            .eq('is_deleted', false)
             .order('created_at', { ascending: false });
 
         if (error) {
@@ -205,10 +242,10 @@ exports.updateBookingStatus = async (req, res, next) => {
     try {
         const { status } = req.body;
 
-        if (!status || !['pending', 'confirmed', 'cancelled'].includes(status)) {
+        if (!status || !['pending', 'confirmed', 'rejected', 'cancelled', 'completed'].includes(status)) {
             return res.status(400).json({
                 success: false,
-                message: 'Please provide a valid status (pending, confirmed, cancelled)',
+                message: 'Please provide a valid status (pending, confirmed, rejected, cancelled, completed)',
             });
         }
 
@@ -226,6 +263,14 @@ exports.updateBookingStatus = async (req, res, next) => {
             return res.status(404).json({
                 success: false,
                 message: 'Booking not found',
+            });
+        }
+
+        // Check if booking is soft-deleted
+        if (booking.is_deleted) {
+            return res.status(400).json({
+                success: false,
+                message: 'This booking has been cancelled and cannot be updated',
             });
         }
 
@@ -268,11 +313,74 @@ exports.getOwnerBookings = async (req, res, next) => {
             .from('bookings')
             .select(`
         *,
-        property:properties!inner(id, title, images, owner_id),
+        property:properties!inner(id, title, images, owner_id, is_deleted),
         user:users(name, email, phone)
       `)
             .eq('property.owner_id', req.user.id)
+            .eq('is_deleted', false)
             .order('created_at', { ascending: false });
+
+        if (error) {
+            throw error;
+        }
+
+        // Filter out bookings for deleted properties
+        const activeBookings = bookings.filter(booking => !booking.property?.is_deleted);
+
+        res.status(200).json({
+            success: true,
+            count: activeBookings.length,
+            data: activeBookings,
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// @desc    Soft delete booking (user cancels own booking)
+// @route   DELETE /api/bookings/:id
+// @access  Private
+exports.deleteBooking = async (req, res, next) => {
+    try {
+        // Get booking
+        const { data: booking, error: fetchError } = await supabase
+            .from('bookings')
+            .select('user_id, property_id, is_deleted')
+            .eq('id', req.params.id)
+            .single();
+
+        if (fetchError || !booking) {
+            return res.status(404).json({
+                success: false,
+                message: 'Booking not found',
+            });
+        }
+
+        // Check if already deleted
+        if (booking.is_deleted) {
+            return res.status(400).json({
+                success: false,
+                message: 'Booking is already cancelled',
+            });
+        }
+
+        // Check if user owns this booking
+        if (booking.user_id !== req.user.id) {
+            return res.status(403).json({
+                success: false,
+                message: 'You are not authorized to cancel this booking',
+            });
+        }
+
+        // SOFT DELETE: Mark as deleted
+        const { error } = await supabase
+            .from('bookings')
+            .update({ 
+                is_deleted: true, 
+                deleted_at: new Date().toISOString(),
+                status: 'cancelled'
+            })
+            .eq('id', req.params.id);
 
         if (error) {
             throw error;
@@ -280,8 +388,72 @@ exports.getOwnerBookings = async (req, res, next) => {
 
         res.status(200).json({
             success: true,
-            count: bookings.length,
-            data: bookings,
+            message: 'Booking cancelled successfully (data preserved in database)',
+            data: {},
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// @desc    Restore soft-deleted booking
+// @route   PATCH /api/bookings/:id/restore
+// @access  Private (Owner only)
+exports.restoreBooking = async (req, res, next) => {
+    try {
+        // Get booking with property info
+        const { data: booking, error: fetchError } = await supabase
+            .from('bookings')
+            .select(`
+        *,
+        property:properties!property_id(owner_id)
+      `)
+            .eq('id', req.params.id)
+            .single();
+
+        if (fetchError || !booking) {
+            return res.status(404).json({
+                success: false,
+                message: 'Booking not found',
+            });
+        }
+
+        // Check if not deleted
+        if (!booking.is_deleted) {
+            return res.status(400).json({
+                success: false,
+                message: 'Booking is not cancelled',
+            });
+        }
+
+        // Check if user is the property owner
+        if (booking.property.owner_id !== req.user.id) {
+            return res.status(403).json({
+                success: false,
+                message: 'You are not authorized to restore this booking',
+            });
+        }
+
+        // Restore booking
+        const { data: restoredBooking, error } = await supabase
+            .from('bookings')
+            .update({ 
+                is_deleted: false, 
+                deleted_at: null,
+                status: 'pending'
+            })
+            .eq('id', req.params.id)
+            .select()
+            .single();
+
+        if (error) {
+            throw error;
+        }
+
+        res.status(200).json({
+            success: true,
+            message: 'Booking restored successfully',
+            data: restoredBooking,
         });
     } catch (error) {
         next(error);
