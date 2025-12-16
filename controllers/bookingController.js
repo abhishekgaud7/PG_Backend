@@ -459,3 +459,74 @@ exports.restoreBooking = async (req, res, next) => {
         next(error);
     }
 };
+
+
+// @desc    Update booking payment status
+// @route   PATCH /api/bookings/:id/payment
+// @access  Private (Owner only)
+exports.updateBookingPayment = async (req, res, next) => {
+    try {
+        const { payment_status } = req.body;
+
+        // Validate payment_status
+        if (!payment_status || !['paid', 'unpaid'].includes(payment_status)) {
+            return res.status(400).json({
+                success: false,
+                message: 'Please provide a valid payment_status (paid or unpaid)',
+            });
+        }
+
+        // Get booking with property info
+        const { data: booking, error: fetchError } = await supabase
+            .from('bookings')
+            .select(`
+        *,
+        property:properties!property_id(owner_id)
+      `)
+            .eq('id', req.params.id)
+            .single();
+
+        if (fetchError || !booking) {
+            return res.status(404).json({
+                success: false,
+                message: 'Booking not found',
+            });
+        }
+
+        // Check if booking is soft-deleted
+        if (booking.is_deleted) {
+            return res.status(400).json({
+                success: false,
+                message: 'This booking has been cancelled',
+            });
+        }
+
+        // Check if user is the property owner
+        if (booking.property.owner_id !== req.user.id) {
+            return res.status(403).json({
+                success: false,
+                message: 'You are not authorized to update payment for this booking',
+            });
+        }
+
+        // Update payment status
+        const { data: updatedBooking, error } = await supabase
+            .from('bookings')
+            .update({ payment_status })
+            .eq('id', req.params.id)
+            .select()
+            .single();
+
+        if (error) {
+            throw error;
+        }
+
+        res.status(200).json({
+            success: true,
+            message: 'Payment status updated successfully',
+            data: updatedBooking,
+        });
+    } catch (error) {
+        next(error);
+    }
+};

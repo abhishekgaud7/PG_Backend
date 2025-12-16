@@ -7,6 +7,7 @@ const {
     getOwnerBookings,
     deleteBooking,
     restoreBooking,
+    updateBookingPayment,
 } = require('../controllers/bookingController');
 const { protect, authorize } = require('../middleware/auth');
 
@@ -21,6 +22,7 @@ router.delete('/:id', protect, deleteBooking); // User can cancel own booking (s
 router.get('/owner', protect, authorize('owner'), getOwnerBookings);
 router.get('/property/:propertyId', protect, authorize('owner'), getPropertyBookings);
 router.patch('/:id', protect, authorize('owner'), updateBookingStatus); // Changed from PUT to PATCH
+router.patch('/:id/payment', protect, authorize('owner'), updateBookingPayment); // Update payment status
 router.patch('/:id/restore', protect, authorize('owner'), restoreBooking); // Restore cancelled booking
 
 module.exports = router;
